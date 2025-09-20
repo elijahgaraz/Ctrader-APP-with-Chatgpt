@@ -636,34 +636,51 @@ class Trader:
         print(f"Received ProtoOASymbolByIdRes with details for {len(actual_message.symbol)} symbol(s).")
 
         for detailed_symbol_proto in actual_message.symbol: # These are full ProtoOASymbol objects
-            symbol_id = detailed_symbol_proto.symbolId
-            symbol_name = self.symbol_id_to_name_map.get(symbol_id)
+            # ProtoOASymbol does not have symbolName, get it from symbols_map
+            symbol_name_for_logging = "Unknown"
+            for name, id_val in self.symbols_map.items():
+                if id_val == detailed_symbol_proto.symbolId:
+                    symbol_name_for_logging = name
+                    break
 
-            if not symbol_name:
-                print(f"  Warning: Got details for symbol ID {symbol_id} but no name in map. Skipping.")
-                continue
+            self.symbol_details_map[detailed_symbol_proto.symbolId] = detailed_symbol_proto
+            print(f"  Stored full details for Symbol ID: {detailed_symbol_proto.symbolId} ({symbol_name_for_logging}), Digits: {detailed_symbol_proto.digits}, PipPosition: {detailed_symbol_proto.pipPosition}")
 
-            self.symbol_details_map[symbol_id] = detailed_symbol_proto
-            print(f"  Stored full details for Symbol ID: {symbol_id} ({symbol_name}), Digits: {detailed_symbol_proto.digits}, PipPosition: {detailed_symbol_proto.pipPosition}")
+        # After updating the details map, check if we have details for the default symbol
+        # and if so, proceed to subscribe for its spot prices.
+        if self.default_symbol_id is not None and self.default_symbol_id in self.symbol_details_map:
+            # Get the default symbol's name from symbols_map for logging
+            default_symbol_name_for_logging = "Unknown"
+            for name, id_val in self.symbols_map.items():
+                if id_val == self.default_symbol_id:
+                    default_symbol_name_for_logging = name
+                    break
 
-            # Now that we have details, check if we need to fetch historical data for this symbol.
-            if self.ohlc_history.get(symbol_name, {}).get('1m', pd.DataFrame()).empty:
-                print(f"Historical 1m data for '{symbol_name}' is missing. Requesting...")
+            print(f"Full details for default symbol '{default_symbol_name_for_logging}' (ID: {self.default_symbol_id}) received. Subscribing to spots.")
+
+            # Ensure ctidTraderAccountId is available before subscribing
+            if self.ctid_trader_account_id is not None:
+                # Fetch historical data for 1m timeframe for the default symbol
+                # Assuming M1 is ProtoOATrendbarPeriod.M1
+                # Fetch max_ohlc_history_len bars (e.g., 200)
+                print(f"Fetching initial historical 1m trendbars for default symbol {default_symbol_name_for_logging} (ID: {self.default_symbol_id}).")
                 self._send_get_trendbars_request(
-                    symbol_id=symbol_id,
-                    period=ProtoOATrendbarPeriod.M1,
+                    symbol_id=self.default_symbol_id,
+                    period=ProtoOATrendbarPeriod.M1, # Assuming M1 is the desired period
                     count=self.max_ohlc_history_len
                 )
+                # Note: We might want to fetch for other timeframes too if strategies use them.
+                # For now, focusing on '1m'.
 
-            # After getting details, ensure we are subscribed to live spots for this symbol.
-            if symbol_id not in self.subscribed_spot_symbol_ids:
-                if self.ctid_trader_account_id:
-                    print(f"Subscribing to spots for {symbol_name} (ID: {symbol_id}) after getting details.")
-                    self._send_subscribe_spots_request(self.ctid_trader_account_id, [symbol_id])
-                    self.subscribed_spot_symbol_ids.add(symbol_id)
-                else:
-                    print(f"Error: Cannot subscribe to spots for {symbol_name}, no ctidTraderAccountId.")
-                    self._last_error = "ctidTraderAccountId not available for spot subscription."
+                # After requesting historical data, subscribe to live spots
+                self._send_subscribe_spots_request(self.ctid_trader_account_id, [self.default_symbol_id])
+                self.subscribed_spot_symbol_ids.add(self.default_symbol_id)
+            else:
+                print(f"Error: ctidTraderAccountId not set. Cannot subscribe to spots or fetch history for {default_symbol_name_for_logging}.")
+                self._last_error = "ctidTraderAccountId not available for spot subscription after getting symbol details."
+        elif self.default_symbol_id is not None:
+            # This case should ideally not be hit if ProtoOASymbolByIdReq was successful for default_symbol_id
+            print(f"Warning: Full details for default symbol ID {self.default_symbol_id} not found in response, cannot subscribe to its spots yet.")
 
 
     def _handle_account_auth_response(self, response: ProtoOAAccountAuthRes) -> None:
@@ -1664,16 +1681,29 @@ class Trader:
             print(f"Error: Cannot handle selection. Symbol '{symbol_name}' not found in map.")
             return
 
-        # When a symbol is selected, we only need to ensure its details are loaded.
-        # The response handler (_handle_symbol_details_response) will then trigger
-        # historical data download and spot subscription, ensuring the correct order of operations.
+        # 1. Subscribe to spot prices if not already subscribed
+        if symbol_id not in self.subscribed_spot_symbol_ids:
+            print(f"New symbol selected: '{symbol_name}' (ID: {symbol_id}). Subscribing...")
+            if self.ctid_trader_account_id:
+                self._send_subscribe_spots_request(self.ctid_trader_account_id, [symbol_id])
+                self.subscribed_spot_symbol_ids.add(symbol_id)
+            else:
+                print("Error: Cannot subscribe to symbol, no ctidTraderAccountId.")
+                return # Cannot proceed without account ID
+
+        # 2. Fetch full symbol details if we don't have them
         if symbol_id not in self.symbol_details_map:
-            print(f"Details for '{symbol_name}' not found locally. Requesting...")
+            print(f"Fetching details for '{symbol_name}'...")
             self._send_get_symbol_details_request([symbol_id])
-        else:
-            # If we already have details, it implies history and subscriptions were already handled.
-            # We can add a log for clarity.
-            print(f"Details for '{symbol_name}' already loaded. No new requests needed.")
+
+        # 3. Fetch historical data if we don't have it for the main timeframe
+        if symbol_name not in self.ohlc_history or self.ohlc_history.get(symbol_name, {}).get('1m', pd.DataFrame()).empty:
+            print(f"Fetching 1m historical data for '{symbol_name}'...")
+            self._send_get_trendbars_request(
+                symbol_id=symbol_id,
+                period=ProtoOATrendbarPeriod.M1,
+                count=self.max_ohlc_history_len
+            )
 
     def close_all_positions(self) -> None:
         """Closes all currently tracked open positions."""
@@ -1913,25 +1943,13 @@ class Trader:
         req.symbolId = symbol_id
         req.period = period
 
-        # Compute timestamps
-        to_timestamp = int(time.time() * 1000)
-
-        period_seconds = TREND_BAR_PERIOD_SECONDS.get(period)
-        if period_seconds is None:
-            self._last_error = f"Unsupported trendbar period: {period}"
-            print(self._last_error)
-            return
-
-        from_timestamp = to_timestamp - (count * period_seconds * 1000)
-
-        req.fromTimestamp = from_timestamp
-        req.toTimestamp = to_timestamp
-        req.count = count  # Optional, but safe to include
+        # Requesting the most recent 'count' bars.
+        # By not specifying from/to timestamps, we make the request unambiguous.
+        req.count = count
 
         print(
             f"Sending ProtoOAGetTrendbarsReq:\n"
-            f"  fromTimestamp: {from_timestamp}\n"
-            f"  toTimestamp:   {to_timestamp}\n"
+            f"  count:         {count}\n"
             f"  period:        {ProtoOATrendbarPeriod.Name(period)}\n"
             f"  symbolId:      {symbol_id}\n"
             f"  ctidTraderAccountId: {self.ctid_trader_account_id}"
