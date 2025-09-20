@@ -1,0 +1,25 @@
+{
+    "openapi": {
+        "client_id": "15886_xUe3eDmCM7SbtROO2Z2HDuIyNGeafQWuo7OKb1BN5BeOcI8vEP",
+        "client_secret": "5nT43rQRm9IbUv1ELUbymjyTxbfIcsGECULNysuHrrJWji2zvz",
+        "host_type": "live",
+        "default_ctid_trader_account_id": 43892404,
+        "spotware_auth_url": "https://connect.spotware.com/oauth/v2/auth",
+        "spotware_token_url": "https://connect.spotware.com/oauth/v2/token",
+        "redirect_uri": "http://localhost:5000/callback"
+    },
+    "general": {
+        "default_symbol": "EURUSD",
+        "chart_update_interval_ms": 500,
+        "min_bars_for_trading": 100,
+        "risk_percentage": 1.0,
+        "batch_profit_target": 10.0
+    },
+    "ai": {
+        "use_ai_overseer": true,
+        "advisor_url": "https://ai-overseer.onrender.com/advice",
+        "advisor_auth_token": "B86150A/Nb3KCowkHyZvJIVxXIkMNuzq8o6okcMVAvY=",
+        "advisor_timeout_ms": 30000,
+        "advisor_min_confidence": 0.6
+    }
+}
